@@ -23,6 +23,13 @@ QQ 客户端 → NapCat（协议端）→ NoneBot2（本项目）→ DeepSeek AP
 
 ### 1. 填 DeepSeek API Key
 
+先从模板生成配置文件：
+
+```bash
+copy .env.example .env     # Windows
+cp .env.example .env       # macOS / Linux
+```
+
 去 https://platform.deepseek.com 创建 Key，打开 `.env` 填进去：
 
 ```
