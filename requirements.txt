@@ -1,0 +1,8 @@
+# 注意：uvicorn 必须搭配 websockets，否则 WebSocket 握手会返回 404
+nonebot2>=2.5.0
+nonebot-adapter-onebot>=2.4.6
+fastapi
+uvicorn
+websockets
+httpx
+python-dotenv
