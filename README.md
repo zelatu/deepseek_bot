@@ -1,168 +1,246 @@
-# 鲸鱼娘 QQ 机器人（本地版）
+# 鲸鱼娘 QQ 机器人
 
-QQ 消息 → DeepSeek → 用鲸鱼娘的口吻回复。跑在你自己电脑上，不花钱租服务器。
+把 DeepSeek 接进 QQ，用鲸鱼娘的口吻聊天。带长期记忆，全部跑在本地。
+
+不需要服务器，不需要公网 IP，数据都在自己硬盘上。
+
+## 特性
+
+- **人设可配置** —— 人格、口头禅、说话长度都在一个文件里，改完重启即生效
+- **长期记忆** —— 对话存 SQLite，重启不失忆；本地向量检索，能想起很久以前聊过的事
+- **记忆可管理** —— `/记忆` 查看、`/忘掉` 删除、`/记忆清空` 重置，记错了能纠正
+- **省 token** —— prompt 分三层（人设 / 事实 / 对话），前两层稳定命中 DeepSeek 上下文缓存
+- **纯本地** —— 向量模型本地跑，不额外花 token
+- **零服务器成本** —— 跑在自己的电脑上，不租云主机
+
+## 架构
+
+```mermaid
+graph LR
+    A[QQ 客户端] --> B[NapCat<br/>协议端]
+    B -->|OneBot 11<br/>反向 WebSocket| C[NoneBot2<br/>本项目]
+    C -->|HTTP| D[DeepSeek API]
+    C --> E[(SQLite<br/>对话 + 事实)]
+    C --> F[本地向量模型<br/>bge-small-zh]
+```
+
+请求组装顺序（前三段稳定以命中缓存）：
 
 ```
-QQ 客户端 → NapCat（协议端）→ NoneBot2（本项目）→ DeepSeek API
+[system]  人设 prompt        ← 永不改动，缓存命中
+[system]  已知事实           ← 每天最多变一次，大部分命中
+[system]  相关往事           ← 向量召回，每轮变
+[user/assistant] 最近对话    ← 每轮变，全价计费
+[user]    当前消息
 ```
 
-## 已经搭好的部分
+## 快速开始
 
-| 文件 | 作用 |
+### 前置要求
+
+| 项 | 版本 |
 |---|---|
-| `bot.py` | 入口，注册 OneBot V11 适配器 |
-| `plugins/whale_chat/__init__.py` | 收发消息、上下文记忆、调用 DeepSeek |
-| `plugins/whale_chat/persona.py` | **鲸鱼娘人设，想改性格就改这里** |
-| `.env` | 配置：API Key、触发词、历史轮数 |
-| `test_deepseek.py` | 不接 QQ 也能测人设效果 |
-| `start.bat` | 双击启动 |
+| Python | 3.10+ |
+| Node.js | 18+（NapCat 需要） |
+| QQ | NT 版（9.9.x，不是旧版 9.7） |
+| DeepSeek API Key | [platform.deepseek.com](https://platform.deepseek.com) 申请 |
 
-已装好：NoneBot2 2.5.0 + OneBot V11 适配器 + FastAPI 驱动（在 `.venv` 里）。
-
-## 你要做的三件事
-
-### 1. 填 DeepSeek API Key
-
-先从模板生成配置文件：
+### 1. 安装依赖
 
 ```bash
-copy .env.example .env     # Windows
-cp .env.example .env       # macOS / Linux
+git clone https://github.com/zelatu/my_dsbot.git
+cd my_dsbot
+
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS / Linux
+
+pip install -r requirements.txt
 ```
 
-去 https://platform.deepseek.com 创建 Key，打开 `.env` 填进去：
+> `websockets` 是必须的。缺了它 WebSocket 握手会返回 404，NapCat 日志里会显示
+> `No supported WebSocket library detected`。
 
+### 2. 配置
+
+```bash
+copy .env.example .env        # Windows
+cp .env.example .env          # macOS / Linux
 ```
+
+编辑 `.env`，至少填上：
+
+```ini
 DEEPSEEK_API_KEY=sk-你的key
 ```
 
-然后先跑一次测试，确认人设和接口都正常：
+**先不接 QQ 也能测人设**：
 
 ```bash
-.venv\Scripts\python.exe test_deepseek.py      # 单次
-.venv\Scripts\python.exe test_deepseek.py -i   # 交互对话，调人设用这个
+python test_deepseek.py        # 单次
+python test_deepseek.py -i     # 交互对话，调人设用这个
 ```
 
-看到鲸鱼娘回话就说明这条路通了，剩下的只是接 QQ。
+看到鲸鱼娘回话，说明模型这一侧已经通了。
 
-### 2. 装 QQ + NapCat
+### 3. 安装 NapCat
 
-> ⚠️ **用小号。** NapCat 是非官方协议端，违反 QQ 用户协议，有封号风险，别拿主号试。
->
-> ⚠️ **运行 NapCat 前，先完全退出 QQ**（任务管理器里确认没有 QQ.exe 残留）。
+NapCat 是 QQ 的协议端，负责登录账号、收发消息。
 
-1. **QQ**：本机已装 NT 版 9.9.19（`D:\Program Files (x86)\Tencent\QQNT`），这步跳过。
-   换机器的话去 https://im.qq.com 下新版 NTQQ —— 必须是 NT 版，旧版 9.7 那种不行
-2. **NapCat**：https://github.com/NapNeko/NapCatQQ/releases
-   Windows 选 `NapCat.Framework` 一键安装版，它会自动找到你装的 QQ
-3. 启动后浏览器会打开 WebUI（形如 `http://127.0.0.1:6099/webui?token=xxxx`），
-   token 也在启动窗口的日志里
-4. 扫码登录你的**小号**
+1. 装 PC 版 QQ（**NT 版**）：https://im.qq.com
+2. 下载 NapCat：https://github.com/NapNeko/NapCatQQ/releases
+   - Windows 选 `NapCat.Shell.zip`（已有 Node）或 `NapCat.Shell.Windows.Node.zip`（自带 Node）
+   - **Windows 10 用户**：启动用 `launcher-win10.bat`，不是 `launcher.bat`
+3. 运行启动器，浏览器打开 WebUI（默认 `http://127.0.0.1:6099/webui`，token 见启动日志）
+4. 扫码登录
 
-### 3. 把 NapCat 接到本项目
+### 4. 连接
 
-本项目在 `127.0.0.1:8080` 监听，等待 NapCat 主动连过来（反向 WS）。
+本项目在 `127.0.0.1:8080` 监听，等 NapCat 主动连过来。
 
-在 NapCat WebUI 里：
+在 NapCat 的 WebUI → 网络配置 → 新建 **WebSocket 客户端**（反向 WS）：
 
-1. 进「网络配置」→ 新建 → 选 **WebSocket 客户端**（有的版本叫「反向 WebSocket」）
-2. URL 填：`ws://127.0.0.1:8080/onebot/v11/ws`
-3. Token 留空（要和 `.env` 里的 `ONEBOT_ACCESS_TOKEN` 保持一致，现在都是空）
-4. 保存并启用
+| 项 | 值 |
+|---|---|
+| URL | `ws://127.0.0.1:8080/onebot/v11/ws` |
+| Token | 留空（与 `.env` 的 `ONEBOT_ACCESS_TOKEN` 一致） |
 
-然后双击 `start.bat` 启动本项目。连接成功时日志会出现类似：
+### 5. 运行
 
-```
-[INFO] nonebot | OneBot V11 | Bot 123456789 connected
+```bash
+python bot.py
 ```
 
-### 4. 试一下
+看到下面这行就成功了：
 
-- **私聊**：直接发消息，什么都回
-- **群聊**：`@机器人 你好` 或者以 `鲸鱼` 开头（`鲸鱼 今天吃什么`）
-- 想清空上下文：发 `重置` 或 `/reset`
+```
+OneBot V11 | Bot 123456789 connected
+```
+
+## 配置项
+
+`.env` 里的全部可配置项：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DEEPSEEK_API_KEY` | — | **必填** |
+| `DEEPSEEK_MODEL` | `deepseek-chat` | 可选 `deepseek-flash`（更快更便宜） |
+| `DEEPSEEK_API_BASE` | `https://api.deepseek.com/v1` | 兼容 OpenAI 协议的接口均可 |
+| `WHALE_TRIGGER_PREFIX` | `鲸鱼` | 群聊里以这个词开头也会触发 |
+| `WHALE_MAX_HISTORY` | `10` | 每次带多少条历史（一问一答算 2 条） |
+| `WHALE_TEMPERATURE` | `1.1` | 越高越跳脱 |
+| `WHALE_MEMORY_ENABLED` | `true` | `false` 退回内存模式（重启失忆） |
+| `WHALE_ADMIN_QQ` | 空 | 允许在群聊用 `/记忆` 的 QQ 号，逗号分隔 |
+
+## 使用
+
+- **私聊**：发什么都回
+- **群聊**：`@机器人 你好` 或以 `鲸鱼` 开头（可配置）
+- **重置对话**：发 `重置` 或 `/reset`
+
+管理指令（仅 `WHALE_ADMIN_QQ` 或私聊可用）：
+
+| 指令 | 作用 |
+|---|---|
+| `/记忆` | 查看记住了什么 |
+| `/忘掉 香菜` | 删除相关记忆 |
+| `/记忆清空` | 清空当前会话记忆 |
 
 ## 记忆系统
 
-她有长期记忆了。数据存在 `data/whale.db`（SQLite），重启不失忆。
+### 数据
 
-**结构**：人设（固定）→ 已知事实（每天最多变一次）→ 相关往事（向量召回）→ 最近对话
-
-前两段稳定，能命中 DeepSeek 的上下文缓存，实际花钱的只有最后一段。
-
-### 指令
-
-| 指令 | 作用 | 权限 |
+| 存储 | 位置 | 内容 |
 |---|---|---|
-| `/记忆` | 看她记住了什么 | 私聊所有人 / 群里仅 `WHALE_ADMIN_QQ` |
-| `/忘掉 香菜` | 删掉相关记忆 | 同上 |
-| `/记忆清空` | 清空当前会话记忆 | 同上 |
-| `重置` | 清空事实（旧行为保留） | 所有人 |
+| 对话与事实 | `data/whale.db` | SQLite，含全部原始对话 |
+| 向量模型 | `models/hf/` | 91MB，首次运行自动下载 |
+
+两者都在 `.gitignore` 里，不会被提交。
 
 ### 提炼事实
 
-画像不是自动出现的，要跑提炼脚本：
+画像不是自动生成的，需要跑提炼脚本：
 
 ```bash
-.venv\Scripts\python.exe distill.py            # 有新料才提炼（≥30 条新对话）
-.venv\Scripts\python.exe distill.py --force    # 强制提炼
-.venv\Scripts\python.exe distill.py --list     # 看各会话待提炼数量
+python distill.py            # 有新料才提炼（≥30 条新对话）
+python distill.py --force    # 强制提炼
+python distill.py --list     # 查看各会话待提炼数量
 ```
 
-建议加个 Windows 任务计划每天跑一次，脚本自己判断要不要真干活。
+建议配一个每天一次的定时任务，脚本会自己判断要不要真干活——没有新对话时耗时 <50ms、不产生 token 费用。
 
-### 相关文件
+提炼时会区分事实类型：
 
-| 文件 | 作用 |
-|---|---|
-| `plugins/whale_chat/storage.py` | SQLite 读写 |
-| `plugins/whale_chat/embedding.py` | 本地向量化（bge-small-zh，离线跑，不花 token） |
-| `plugins/whale_chat/memory.py` | 组装上下文、向量召回 |
-| `distill.py` | 离线提炼事实 |
-| `models/hf/` | 向量模型缓存（91MB） |
+| 类型 | 例子 | 处理 |
+|---|---|---|
+| 长期 | 不吃香菜、猫叫豆豆 | 永久保留 |
+| 短期 | 在准备面试 | 30 天后自动失效 |
+| 一次性 | 今天心情不好 | 不写入 |
 
-关掉记忆：`.env` 里 `WHALE_MEMORY_ENABLED=false`，退回内存模式。
+### 检索
 
-## 调人设
+本地 `bge-small-zh-v1.5`（512 维）+ numpy 余弦相似度暴力搜索。一万条对话约 15MB，检索 <10ms。
 
-改 `plugins/whale_chat/persona.py` 里的 `SYSTEM_PROMPT`，改完重启生效。
-建议先用 `test_deepseek.py -i` 反复试，满意了再去 QQ 里用。
+阈值 0.35。实测「我喜欢吃什么」↔「我最喜欢吃白米饭」相似度 0.697，↔「今天天气不错」0.297（被过滤）。
+
+向量化失败不影响正常对话，只是那条搜不到。
+
+## 项目结构
+
+```
+├── bot.py                      # 入口
+├── distill.py                  # 离线提炼事实
+├── test_deepseek.py            # 不接 QQ 单测人设
+├── plugins/whale_chat/
+│   ├── __init__.py             # 消息收发、指令
+│   ├── persona.py              # 人设 prompt（改这里调性格）
+│   ├── storage.py              # SQLite 读写
+│   ├── embedding.py            # 本地向量化
+│   └── memory.py               # 上下文组装、向量召回
+├── data/                       # 运行时生成，已忽略
+└── models/                     # 模型缓存，已忽略
+```
 
 ## 常见问题
 
-**启动报端口被占用**
-改 `.env` 里的 `PORT`，同时把 NapCat 里的 WS 地址跟着改。
-
 **NapCat 报 `Unexpected server response: 404`**
-缺 WebSocket 库。装 uvicorn 时如果没带 `[standard]` 就会缺：
-```bash
-.venv\Scripts\pip install websockets
-```
-日志里会同时出现 `No supported WebSocket library detected`，看到这句就是这个问题。
+缺 WebSocket 库。`pip install websockets`。日志里同时会有 `No supported WebSocket library detected`。
 
 **NapCat 显示已连接，但机器人不回话**
-- 群聊必须 @ 机器人或以触发词开头，普通闲聊不会回（防止刷屏和烧 token）
-- 看本项目日志有没有报错
+群聊必须 @ 或触发词开头，普通闲聊不回（防刷屏和烧 token）。看 bot 日志有无报错。
 
-**回复 `出问题了：DeepSeek 返回 401`**
-Key 错了或失效了。
+**`DeepSeek 返回 401`**
+Key 错了或失效。
 
-**回复 `余额不足`**
-DeepSeek 账户没钱了，去平台充值。
+**`余额不足`**
+DeepSeek 账户没钱了。
 
 **重启后上下文没了**
-历史存在内存里，重启即清空。本地测试阶段够用。
+检查 `WHALE_MEMORY_ENABLED` 是否为 `true`，以及 `data/whale.db` 是否可写。
 
-## 后续想 24 小时在线
+**Windows 下双击 .bat 中文乱码**
+`.bat` 文件必须存为 GBK 或纯 ASCII，UTF-8 中文会被 cmd 按 GBK 解析成乱码并破坏语法。
 
-现在这套依赖电脑开着。想 7×24 跑，把这整个目录搬到云服务器上：
+**模型下载失败**
+设置 `HF_ENDPOINT=https://hf-mirror.com` 和 `HF_HUB_DISABLE_XET=1`。
+后者很关键——新版 huggingface_hub 默认走 Xet 协议，镜像站不支持，会报 `401 Unauthorized`。
 
-- 国内轻量 2核2G 起步（NapCat 吃内存，别买 1核1G）
-- 用 `systemd` 或 Docker 守护两个进程：NapCat 和 `bot.py`
-- 服务器不需要域名、不需要备案（只主动外连，不对外提供服务）
-- 把 `.env` 里的 `ONEBOT_ACCESS_TOKEN` 改成强随机串，`HOST` 保持 `127.0.0.1`
+## 想 24 小时在线
 
-## 注意
+当前方案依赖电脑开机。需要常驻的话，把整个目录搬到一台不关机的机器上（云服务器 / 旧笔记本 / NAS）：
 
-- `.env` 里有你的 API Key，别提交到 git（`.gitignore` 已排除）
-- 鲸鱼娘形象版权归原作者，本项目仅作个人使用
+- 国内轻量 2 核 2G 起步（NapCat 吃内存，1 核 1G 容易 OOM）
+- 用 systemd 或 Docker 守护两个进程：NapCat 和 `bot.py`
+- **不需要域名、不需要备案**（只主动外连，不对外提供服务）
+- 务必把 `ONEBOT_ACCESS_TOKEN` 改成强随机串，`HOST` 保持 `127.0.0.1`
+
+## 免责声明
+
+- 本项目使用 **NapCat** 等非官方协议端接入 QQ，**违反腾讯 QQ 用户协议，存在账号被封禁的风险**。请务必使用小号，不要使用主账号。
+- 本项目与 DeepSeek（深度求索）官方无任何关联，不代表官方立场。
+- 「鲸鱼娘」形象版权归原作者所有，本项目仅提供文字人设 prompt，不包含任何图像素材。
+- 仅供个人学习与技术研究使用，请勿用于商业用途或大规模自动化操作。
+
+## 许可
+
+MIT
