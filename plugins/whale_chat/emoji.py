@@ -27,7 +27,12 @@ TOP_K = 6
 
 _items: list[dict] | None = None
 _matrix: np.ndarray | None = None
+_valid_idx: list[int] = []
 _by_emotion: dict[str, list[dict]] = {}
+
+# caption 短于这个长度说明没有实际台词（如「DeepSeek鲸娘表情包」），
+# 向量化后语义空洞，会把检索结果带偏，不参与向量索引
+MIN_CAPTION_LEN = 14
 
 # 台词格式：「台词」情绪词表情包 —— 情绪词才是检索该用的部分
 _EMO_TAIL = re.compile(r"[』」]\s*([^』」]{1,12}?)表情包\s*$")
@@ -56,7 +61,7 @@ def _build_vectors(items: list[dict]) -> np.ndarray:
 
 def _load() -> bool:
     """加载索引和向量。返回是否可用。"""
-    global _items, _matrix
+    global _items, _matrix, _valid_idx
     if _items is not None:
         return _matrix is not None and len(_items) > 0
 
@@ -83,19 +88,27 @@ def _load() -> bool:
         if emo:
             _by_emotion.setdefault(emo, []).append(it)
 
+    # 只有台词够长的才进向量索引
+    _valid_idx = [
+        i for i, it in enumerate(_items) if len(it["caption"]) >= MIN_CAPTION_LEN
+    ]
+    if not _valid_idx:
+        _matrix = None
+        return bool(_by_emotion)
+
     try:
         if VEC_PATH.exists():
             mat = np.load(VEC_PATH)
-            if mat.shape[0] == len(_items):
+            if mat.shape[0] == len(_valid_idx):
                 _matrix = mat
                 return True
-        mat = _build_vectors(_items)
+        mat = _build_vectors([_items[i] for i in _valid_idx])
         np.save(VEC_PATH, mat)
         _matrix = mat
         return True
     except Exception:
         _matrix = None
-        return False
+        return bool(_by_emotion)
 
 
 def available() -> bool:
@@ -138,8 +151,8 @@ def pick(reply_text: str, emotion: str | None = None) -> Path | None:
     if not hits:
         return None
 
-    idx, _ = random.choice(hits[:3])
-    item = _items[idx]
+    pos, _ = random.choice(hits[:3])
+    item = _items[_valid_idx[pos]]
     path = EMO_DIR / f"{item['id']}.webp"
     return path if path.exists() else None
 
