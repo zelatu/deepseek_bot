@@ -5,14 +5,25 @@
 """
 
 import asyncio
+import base64
+import random
+import re
 
 import httpx
 from nonebot import get_plugin_config, logger, on_message
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent, PrivateMessageEvent
+from nonebot.adapters.onebot.v11 import (
+    Bot,
+    GroupMessageEvent,
+    Message,
+    MessageEvent,
+    MessageSegment,
+    PrivateMessageEvent,
+)
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import Rule
 from pydantic import BaseModel
 
+from . import emoji as Emo
 from . import memory as M
 from . import storage as S
 from .persona import SYSTEM_PROMPT, build_messages
@@ -33,6 +44,9 @@ class Config(BaseModel):
     whale_memory_enabled: bool = True
     # 允许使用 /记忆 指令的 QQ 号，逗号分隔。留空则只允许私聊使用
     whale_admin_qq: str = ""
+    # 表情包：按回复内容语义检索梗图库
+    whale_emo_enabled: bool = True
+    whale_emo_prob: float = 0.35
 
 
 __plugin_meta__ = PluginMetadata(
@@ -142,6 +156,49 @@ async def handle_admin_cmd(bot: Bot, event: MessageEvent):
     await admin_cmd.finish(result)
 
 
+_EMO_TAG = re.compile(r"\[\s*emo\s*:\s*([a-zA-Z]+)\s*\]")
+
+
+def _strip_emo_tag(text: str) -> tuple[str, str | None]:
+    """取出回复里的情绪标记，并从正文里删掉。"""
+    m = _EMO_TAG.search(text)
+    if not m:
+        return text.strip(), None
+    return _EMO_TAG.sub("", text).strip(), m.group(1).lower()
+
+
+async def _compose_reply(text: str) -> Message:
+    """文本 + 可选表情包，合成一条消息发出。"""
+    text, emotion = _strip_emo_tag(text)
+    msg = Message(text)
+
+    if not config.whale_emo_enabled:
+        return msg
+    # 模型主动标了情绪就放宽，没标则按概率决定
+    if emotion is None and random.random() > config.whale_emo_prob:
+        return msg
+
+    try:
+        path = await asyncio.to_thread(Emo.pick, text, emotion)
+    except Exception as exc:
+        logger.debug(f"表情包检索失败: {exc}")
+        return msg
+
+    if path is None:
+        return msg
+
+    try:
+        b64 = base64.b64encode(path.read_bytes()).decode()
+        if len(b64) > 1_500_000:
+            return msg
+        msg += MessageSegment.image(f"base64://{b64}")
+        logger.info(f"配图 #{path.stem} ({emotion or 'vector'})")
+    except Exception as exc:
+        logger.warning(f"表情包发送失败: {exc}")
+
+    return msg
+
+
 @chat.handle()
 async def handle_chat(bot: Bot, event: MessageEvent):
     text = event.get_plaintext().strip()
@@ -193,4 +250,4 @@ async def handle_chat(bot: Bot, event: MessageEvent):
         logger.error(f"记忆写入失败: {exc}")
 
     logger.info(f"[{scope}] {text[:40]} -> {reply[:40]}")
-    await chat.finish(reply[:800])
+    await chat.finish(await _compose_reply(reply[:800]))

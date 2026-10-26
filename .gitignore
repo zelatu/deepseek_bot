@@ -21,6 +21,11 @@ data/
 # 向量模型（91MB，首次运行自动下载）
 models/
 
+# 表情包图库（34MB，用 tools/fetch_memes.py 自己抓）
+assets/emo/
+assets/emo_index.json
+assets/emo_vectors.npy
+
 # 日志
 *.log
 

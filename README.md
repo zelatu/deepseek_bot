@@ -185,6 +185,51 @@ python distill.py --list     # 查看各会话待提炼数量
 
 向量化失败不影响正常对话，只是那条搜不到。
 
+## 表情包
+
+回复会配一张梗图。不是随机发，而是按情绪匹配。
+
+### 怎么工作
+
+模型在回复末尾可以加一个情绪标记（对方看不到，会被程序移除）：
+
+```
+[emo:happy]  [emo:angry]  [emo:sad]  [emo:speechless]
+[emo:surprised]  [emo:smug]  [emo:shy]
+```
+
+- **有标记** → 从该情绪的图库里随机挑一张（最准）
+- **无标记** → 按 `WHALE_EMO_PROB` 概率触发向量检索兜底
+- **都不中** → 不发表情，宁可不发也不发不相关的
+
+### 准备图库
+
+```bash
+python tools/fetch_memes.py              # 抓全部 41 页（2452 张）
+python tools/fetch_memes.py --pages 20   # 只抓前 20 页
+python tools/label_memes.py              # 给图打情绪标签
+```
+
+图库来自 [梗鲸 aigengtu.com](https://aigengtu.com)——蓝色大肥鱼表情包档案馆。
+脚本会自动过滤敏感内容，抓完的图存在 `assets/emo/`，索引在 `assets/emo_index.json`。
+
+### 加自己的图
+
+1. 把图放进 `assets/emo/`，命名成数字（如 `9001.webp`）
+2. 在 `assets/emo_index.json` 里加一条：
+
+```json
+{"id": "9001", "category": "自制", "caption": "无语翻白眼表情包", "emotion": "speechless"}
+```
+
+`emotion` 可选，不填就只参与向量检索。
+
+### 已知限制
+
+情绪标签是靠台词里的关键词规则打的，覆盖率约 14%（51/368），其余靠向量兜底。
+向量匹配对这批梗图的效果一般——相似度普遍挤在 0.46~0.55，区分度低。
+想提升的话，可以给更多图补 `emotion` 字段。
+
 ## 项目结构
 
 ```
@@ -192,13 +237,18 @@ python distill.py --list     # 查看各会话待提炼数量
 ├── distill.py                  # 离线提炼事实
 ├── test_deepseek.py            # 不接 QQ 单测人设
 ├── plugins/whale_chat/
-│   ├── __init__.py             # 消息收发、指令
+│   ├── __init__.py             # 消息收发、指令、表情合成
 │   ├── persona.py              # 人设 prompt（改这里调性格）
 │   ├── storage.py              # SQLite 读写
 │   ├── embedding.py            # 本地向量化
-│   └── memory.py               # 上下文组装、向量召回
+│   ├── memory.py               # 上下文组装、向量召回
+│   └── emoji.py                # 表情包检索
+├── tools/
+│   ├── fetch_memes.py          # 抓取表情包图库
+│   └── label_memes.py          # 给图打情绪标签
 ├── data/                       # 运行时生成，已忽略
-└── models/                     # 模型缓存，已忽略
+├── models/                     # 模型缓存，已忽略
+└── assets/emo/                 # 表情包图库，已忽略
 ```
 
 ## 常见问题
