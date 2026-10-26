@@ -6,8 +6,13 @@
 
 import asyncio
 import base64
+import importlib
+import os
 import random
 import re
+import subprocess
+import sys
+from pathlib import Path
 
 import httpx
 from nonebot import get_plugin_config, logger, on_message
@@ -25,8 +30,8 @@ from pydantic import BaseModel
 
 from . import emoji as Emo
 from . import memory as M
+from . import persona
 from . import storage as S
-from .persona import SYSTEM_PROMPT, build_messages
 
 
 class Config(BaseModel):
@@ -95,8 +100,86 @@ async def _is_admin_cmd(event: MessageEvent) -> bool:
     return _is_admin(event)
 
 
+async def _is_reload_cmd(event: MessageEvent) -> bool:
+    text = event.get_plaintext().strip()
+    if text not in {"/reload", "/重载"}:
+        return False
+    return _is_admin(event)
+
+
+async def _is_restart_cmd(event: MessageEvent) -> bool:
+    text = event.get_plaintext().strip()
+    if text not in {"/restart", "/重启"}:
+        return False
+    return _is_admin(event)
+
+
 admin_cmd = on_message(rule=Rule(_is_admin_cmd), priority=5, block=True)
+reload_cmd = on_message(rule=Rule(_is_reload_cmd), priority=1, block=True)
+restart_cmd = on_message(rule=Rule(_is_restart_cmd), priority=1, block=True)
 chat = on_message(rule=Rule(_is_for_me), priority=10, block=True)
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _syntax_check() -> str:
+    """重启前检查语法，避免新进程起不来把自己搞挂。返回错误信息，空字符串表示通过。"""
+    import py_compile
+
+    targets = [PROJECT_ROOT / "bot.py", PROJECT_ROOT / "distill.py"]
+    targets += sorted((PROJECT_ROOT / "plugins" / "whale_chat").glob("*.py"))
+    for f in targets:
+        try:
+            py_compile.compile(str(f), doraise=True)
+        except py_compile.PyCompileError as exc:
+            return f"{f.name}: {getattr(exc, 'msg', str(exc))[:200]}"
+        except Exception as exc:
+            return f"{f.name}: {exc}"
+    return ""
+
+
+@restart_cmd.handle()
+async def handle_restart(bot: Bot, event: MessageEvent):
+    """重启整个进程。改 .env 或非人设代码后用它。"""
+    err = _syntax_check()
+    if err:
+        await restart_cmd.finish(f"代码有语法错误，不敢重启：\n{err}")
+
+    await restart_cmd.send("语法检查通过，重启中…大约 6 秒后回来")
+
+    async def _do_restart() -> None:
+        await asyncio.sleep(1.5)
+        py = sys.executable
+        script = PROJECT_ROOT / "bot.py"
+        # 等 5 秒让旧进程先退出、端口释放，再拉起新进程
+        cmd = f'ping -n 6 127.0.0.1 >nul & "{py}" "{script}"'
+        try:
+            subprocess.Popen(
+                cmd,
+                cwd=str(PROJECT_ROOT),
+                shell=True,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            )
+        except Exception as exc:
+            logger.error(f"拉起新进程失败: {exc}")
+            return
+        logger.warning("新进程已排队，本进程退出")
+        os._exit(0)
+
+    asyncio.create_task(_do_restart())
+
+
+@reload_cmd.handle()
+async def handle_reload(bot: Bot, event: MessageEvent):
+    """重载人设模块。改完 persona.py 用它，不用重启 bot。"""
+    try:
+        importlib.reload(persona)
+        chars = len(persona.SYSTEM_PROMPT)
+        logger.info(f"人设已重载，{chars} 字")
+        await reload_cmd.finish(f"人设已重载（{chars} 字），下句话就生效")
+    except Exception as exc:
+        logger.error(f"人设重载失败: {exc}")
+        await reload_cmd.finish(f"重载失败，文件可能有语法错误：\n{exc}")
 
 
 async def _ask_deepseek(messages: list[dict]) -> str:
@@ -227,7 +310,7 @@ async def handle_chat(bot: Bot, event: MessageEvent):
             messages = await asyncio.to_thread(M.build_context, scope, text, config.whale_max_history * 2)
         else:
             history = _fallback_history.get(scope, [])
-            messages = build_messages(SYSTEM_PROMPT, history, text)
+            messages = persona.build_messages(persona.SYSTEM_PROMPT, history, text)
 
         reply = await _ask_deepseek(messages)
     except asyncio.TimeoutError:

@@ -11,8 +11,8 @@
 from __future__ import annotations
 
 from . import embedding as E
+from . import persona
 from . import storage as S
-from .persona import SYSTEM_PROMPT
 
 RELATED_TOP_K = 4
 RELATED_MIN_SCORE = 0.35
@@ -67,7 +67,7 @@ def build_context(scope: str, current_text: str, recent_limit: int = 10) -> list
     recent = S.recent_messages(scope, recent_limit)
     recent_ids = {m["id"] for m in recent}
 
-    system_parts = [SYSTEM_PROMPT]
+    system_parts = [persona.SYSTEM_PROMPT]
     facts = _facts_block(scope)
     if facts:
         system_parts.append(facts)
